@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Model Retopology Tool</title>
+    <link rel="stylesheet" href="retopology-style.css">
+</head>
+<body>
+    <div class="retopology-tool">
+        <header class="retopology-header">
+            <h1>3D Model Retopology Tool</h1>
+        </header>
+        
+        <div class="retopology-main">
+            <div class="file-upload-container">
+                <div id="dropZone" class="drop-zone">
+                    <div class="upload-content">
+                        <p>Drag & Drop your 3D model here</p>
+                        <p>or</p>
+                        <button type="button" id="chooseFile" class="btn btn-primary">Choose File</button>
+                        <input type="file" id="fileInput" accept=".stl,.obj,.fbx,.ply" style="display: none;">
+                        <div class="file-types">
+                            <span class="file-type">.obj</span>
+                            <span class="file-type">.fbx</span>
+                            <span class="file-type">.stl</span>
+                            <span class="file-type">.ply</span>
+                        </div>
+                    </div>
+                    <div id="fileInfo" class="file-info">
+                        No file selected
+                    </div>
+                </div>
+            </div>
+            
+            <div class="viewer-container">
+                <div class="viewer-panel">
+                    <div class="viewer-header">
+                        <h3>Original Model</h3>
+                    </div>
+                    <div class="viewer-content">
+                        <div id="originalModel" class="canvas-container">
+                            <div id="originalStats" class="model-stats"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="viewer-panel">
+                    <div class="viewer-header">
+                        <h3>Processed Model</h3>
+                    </div>
+                    <div class="viewer-content">
+                        <div id="processedModel" class="canvas-container">
+                            <div id="processedStats" class="model-stats"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="controls-container">
+                <div class="control-group">
+                    <label for="targetFaces">Target Face Count:</label>
+                    <input type="number" id="targetFaces" min="100" max="100000" value="5000">
+                    <small class="control-help">Adjust the target face count for retopology</small>
+                </div>
+                
+                <div class="control-group">
+                    <label for="preserveUVs">Preserve UVs:</label>
+                    <input type="checkbox" id="preserveUVs" checked>
+                    <small class="control-help">Preserve UV coordinates during retopology</small>
+                </div>
+                
+                <div class="action-buttons">
+                    <button id="processButton" class="action-button primary-button" disabled>Process Model</button>
+                    <button id="downloadButton" class="action-button secondary-button" disabled>Download Result</button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="error-container">
+            <p class="error-message"></p>
+            <small class="error-details"></small>
+        </div>
+    </div>
+
+    <!-- Three.js and loaders -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r132/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.0/examples/js/loaders/STLLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.0/examples/js/loaders/OBJLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.0/examples/js/loaders/FBXLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.0/examples/js/loaders/PLYLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.0/examples/js/modifiers/SimplifyModifier.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.0/examples/js/utils/BufferGeometryUtils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.0/examples/js/exporters/OBJExporter.js"></script>
+
+    <!-- Main script -->
+    <script src="retopology.js"></script>
+</body>
+</html>
