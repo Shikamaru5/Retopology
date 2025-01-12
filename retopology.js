@@ -103,7 +103,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         // Set up camera
         camera.position.set(0, 0, 5);
-        camera.far = 2000; 
+        camera.far = 20000; 
         camera.updateProjectionMatrix();
 
         // Clear existing lights
@@ -134,14 +134,19 @@ document.addEventListener('DOMContentLoaded', function() {
         const controls = new THREE.OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
         controls.dampingFactor = 0.05;
-        controls.minDistance = 0.5;  // Allow closer zoom
-        controls.maxDistance = 100;  // Allow further zoom out
+        controls.minDistance = 0.01;  // Allow much closer zoom
+        controls.maxDistance = 10000;  // Allow far zoom out
         controls.enablePan = true;
-        controls.panSpeed = 1.0;     // Adjust pan speed
-        controls.rotateSpeed = 1.0;  // Adjust rotation speed
-        controls.zoomSpeed = 1.2;    // Slightly faster zoom
+        controls.panSpeed = 1.5;     // Faster panning
+        controls.rotateSpeed = 1.0;  // Standard rotation speed
+        controls.zoomSpeed = 1.5;    // Faster zoom
         controls.enableZoom = true;
         controls.screenSpacePanning = true;  // More intuitive panning
+        controls.mouseButtons = {
+            LEFT: THREE.MOUSE.ROTATE,
+            MIDDLE: THREE.MOUSE.DOLLY,
+            RIGHT: THREE.MOUSE.PAN
+        };
 
         return { container, controls };
     }
@@ -166,185 +171,323 @@ document.addEventListener('DOMContentLoaded', function() {
         reader.readAsArrayBuffer(file);
     }
 
-    function handleFileSelect(file) {
-        if (!file) return;
-        
-        // Update the file info display
-        fileInfo.textContent = `Selected: ${file.name}`;
-        
-        // Create URL for the file
-        const url = URL.createObjectURL(file);
-        loadModel(file);
+    function handleFileSelect(fileList) {
+        // Create a map of the files
+        const files = {};
+        for (let i = 0; i < fileList.length; i++) {
+            const file = fileList[i];
+            files[file.name] = file; // Map file names to File objects
+        }
+    
+        // Find the main model file (e.g., .gltf, .obj, etc.)
+        const modelFile = Object.values(files).find(file => {
+            const extension = file.name.split('.').pop().toLowerCase();
+            return ['gltf', 'glb', 'obj', 'fbx', 'stl', 'ply', 'dae', '3ds'].includes(extension);
+        });
+    
+        if (!modelFile) {
+            showError('No supported model file found in selection.');
+            return;
+        }
+    
+        loadModel(modelFile, files); // Pass all files to the loader
     }
 
-    function loadModel(file) {
-        const reader = new FileReader();
-        const fileExtension = file.name.split('.').pop().toLowerCase();
+    function addModelToScene(gltf) {
+        // Clear existing model from scene
+        while(originalScene.children.length > 0) { 
+            originalScene.remove(originalScene.children[0]); 
+        }
+    
+        const model = gltf.scene || gltf.scenes[0];
+        centerModel(model, originalCamera, originalControls);
+        originalScene.add(model);
+    
+        // Enable process button
+        processButton.disabled = false;
+        downloadButton.disabled = true; // Disable download until processed
+    }
+
+    function handleLoadedModel(result, fileExtension) {
+        // Clear existing model from scene
+        while(originalScene.children.length > 0) { 
+            originalScene.remove(originalScene.children[0]); 
+        }
+    
+        let mesh;
+    
+        // Create two materials - one for the solid mesh and one for wireframe
+        let meshMaterial = new THREE.MeshPhongMaterial({
+            color: 0xaaaaaa,  // Lighter gray
+            specular: 0x222222,
+            shininess: 20,
+            side: THREE.DoubleSide
+        });
+    
+        let wireframeMaterial = new THREE.LineBasicMaterial({
+            color: 0x000000,
+            linewidth: 1,
+            opacity: 0.3,
+            transparent: true
+        });
+    
+        // Handle different loaders
+        if (fileExtension === 'stl' || fileExtension === 'ply') {
+            // Result is geometry
+            const geometry = result;
         
-        reader.onload = function(event) {
-            const fileData = event.target.result;
+            // Create mesh with the base material
+            mesh = new THREE.Mesh(geometry, meshMaterial);
+        
+            // Create wireframe geometry and mesh
+            const wireframe = new THREE.WireframeGeometry(geometry);
+            const wireframeMesh = new THREE.LineSegments(wireframe, wireframeMaterial);
+        
+            // Set render order (optional, ensures wireframe renders after mesh)
+            wireframeMesh.renderOrder = 1;
+        
+            // Add wireframe as a child of the mesh
+            mesh.add(wireframeMesh);
+        
+            // Rotate to stand upright (if needed)
+            mesh.rotation.x = -Math.PI / 2;
+        } else if (fileExtension === 'obj' || fileExtension === 'fbx' || fileExtension === '3ds') {
+            // Result is Object3D
+            mesh = result;
+            mesh.rotation.x = -Math.PI / 2;
             
-            try {
-                // Update file info
-                const fileInfo = document.getElementById('fileInfo');
-                if (fileInfo) {
-                    fileInfo.textContent = `File selected: ${file.name} Size: ${(file.size / 1024).toFixed(2)} KB Type: ${file.type}`;
+            // Traverse the mesh to replace materials and add wireframe
+            mesh.traverse(function (child) {
+                if (child.isMesh) {
+                    // Replace material
+                    child.material = meshMaterial;
+            
+                    // Create wireframe
+                    const wireframe = new THREE.WireframeGeometry(child.geometry);
+                    const wireframeMesh = new THREE.LineSegments(wireframe, wireframeMaterial);
+                    child.add(wireframeMesh);
                 }
-
-                // Create appropriate loader based on file extension
-                //should add .blend .usdz .gltf .dae .3DS .X and .glb
-                let loader;
-                switch (fileExtension) {
-                    case 'stl':
-                        loader = new THREE.STLLoader();
-                        break;
-                    case 'obj':
-                        loader = new THREE.OBJLoader();
-                        break;
-                    case 'fbx':
-                        loader = new THREE.FBXLoader();
-                        break;
-                    case 'ply':
-                        loader = new THREE.PLYLoader();
-                        break;
-                    default:
-                        throw new Error('Unsupported file format');
+            });
+        } else if (fileExtension === 'gltf' || fileExtension === 'glb') {
+            // Result is a GLTF scene
+            mesh = result.scene || result.scenes[0];
+        
+            // Optionally rotate the model if needed
+            // mesh.rotation.x = -Math.PI / 2;
+        
+            // Traverse the mesh to replace materials and add wireframe
+            const meshMaterial = new THREE.MeshPhongMaterial({
+                color: 0xaaaaaa,
+                specular: 0x222222,
+                shininess: 20,
+                side: THREE.DoubleSide
+            });
+        
+            const wireframeMaterial = new THREE.LineBasicMaterial({
+                color: 0x000000,
+                linewidth: 1,
+                opacity: 0.3,
+                transparent: true
+            });
+        
+            mesh.traverse(function (child) {
+                if (child.isMesh) {
+                    // Replace material (optional, may overwrite original materials)
+                    child.material = meshMaterial;
+        
+                    // Create wireframe
+                    const wireframe = new THREE.WireframeGeometry(child.geometry);
+                    const wireframeMesh = new THREE.LineSegments(wireframe, wireframeMaterial);
+                    child.add(wireframeMesh);
                 }
+            });
+        } else if (fileExtension === 'dae') {
+            // Result is a Collada scene
+            mesh = result.scene;
 
-                // Load the model
-                loader.load(
-                    URL.createObjectURL(file),
-                    function(geometry) {
-                        // Clear existing model if any
-                        while(originalScene.children.length > 0) { 
-                            originalScene.remove(originalScene.children[0]); 
+            // Create materials
+            const meshMaterial = new THREE.MeshPhongMaterial({
+                color: 0xaaaaaa,
+                specular: 0x222222,
+                shininess: 20,
+                side: THREE.DoubleSide,
+                depthWrite: true,
+                depthTest: true
+            });
+
+            const wireframeMaterial = new THREE.LineBasicMaterial({
+                color: 0x000000,
+                linewidth: 1,
+                opacity: 0.25,
+                transparent: true,
+                depthWrite: false
+            });
+
+            // Traverse the mesh to replace materials and add wireframe
+            mesh.traverse(function (child) {
+                if (child.isMesh) {
+                    // Replace material
+                    child.material = meshMaterial;
+
+                    // Ensure geometry has computed properties
+                    child.geometry.computeBoundingSphere();
+                    child.geometry.computeBoundingBox();
+                    child.geometry.computeVertexNormals();
+
+                    // Create wireframe
+                    const wireframe = new THREE.WireframeGeometry(child.geometry);
+                    const wireframeMesh = new THREE.LineSegments(wireframe, wireframeMaterial);
+                    child.add(wireframeMesh);
+                }
+            });
+        } else {
+            throw new Error('Unsupported file format');
+        }
+    
+        // Center the model
+        centerModel(mesh, originalCamera, originalControls);
+        
+        // Add lighting to the original scene
+        addLightingToScene(originalScene);
+    
+        // Add mesh to scene
+        originalScene.add(mesh);
+    
+        // Enable process button
+        processButton.disabled = false;
+        downloadButton.disabled = true; // Disable download until processed
+    }
+
+    function addLightingToScene(scene) {
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
+        scene.add(ambientLight);
+    
+        const frontLight = new THREE.DirectionalLight(0xffffff, 0.4);
+        frontLight.position.set(0, 0, 5);
+        scene.add(frontLight);
+    
+        const topLight = new THREE.DirectionalLight(0xffffff, 0.3);
+        topLight.position.set(0, 5, 0);
+        scene.add(topLight);
+    
+        const sideLight = new THREE.DirectionalLight(0xffffff, 0.2);
+        sideLight.position.set(5, 0, 0);
+        scene.add(sideLight);
+    }
+
+    function loadModel(modelFile, files) {
+        const fileExtension = modelFile.name.split('.').pop().toLowerCase();
+    
+        try {
+            // Update file info
+            fileInfo.textContent = `File selected: ${modelFile.name} Size: ${(modelFile.size / 1024).toFixed(2)} KB Type: ${modelFile.type}`;
+        
+            let loader;
+            let manager;
+            let objectURLs = [];
+            
+            // Create appropriate loader based on file extension
+            switch (fileExtension) {
+                case 'stl':
+                    loader = new THREE.STLLoader();
+                    break;
+                case 'obj':
+                    loader = new THREE.OBJLoader();
+                    // Handle MTL files if necessary
+                    break;
+                case 'fbx':
+                    loader = new THREE.FBXLoader();
+                    break;
+                case 'ply':
+                    loader = new THREE.PLYLoader();
+                    break;
+                case 'gltf':
+                case 'glb':
+                    // Use the custom LoadingManager
+                    manager = new THREE.LoadingManager();
+                    
+                    manager.setURLModifier((url) => {
+                        const fileName = url.split('/').pop().split('?')[0]; // Get the filename from the URL
+                        const file = files[fileName];
+                        if (file) {
+                            const blobURL = URL.createObjectURL(file);
+                            objectURLs.push(blobURL);
+                            return blobURL;
                         }
-
-                        // Create two materials - one for the solid mesh and one for wireframe
-                        let meshMaterial = new THREE.MeshPhongMaterial({
-                            color: 0xaaaaaa,  // Lighter gray
-                            specular: 0x222222,
-                            shininess: 20,
-                            side: THREE.DoubleSide
-                        });
-
-                        let wireframeMaterial = new THREE.LineBasicMaterial({
-                            color: 0x000000,
-                            linewidth: 1,
-                            opacity: 0.3,
-                            transparent: true
-                        });
-
-                        let mesh;
-                        if (geometry.isBufferGeometry) {
-                            // Create the main mesh
-                            mesh = new THREE.Mesh(geometry, meshMaterial);
-                            
-                            // Create wireframe mesh
-                            const wireframe = new THREE.WireframeGeometry(geometry);
-                            const wireframeMesh = new THREE.LineSegments(wireframe, wireframeMaterial);
-                            
-                            // Create a group to hold both meshes
-                            const group = new THREE.Group();
-                            group.add(mesh);
-                            group.add(wireframeMesh);
-                            
-                            // Rotate to stand upright
-                            group.rotation.x = -Math.PI / 2;
-                            
-                            mesh = group;
-                        } else if (geometry.isObject3D) {
-                            mesh = geometry;
-                            mesh.rotation.x = -Math.PI / 2;
-                        } else {
-                            throw new Error('Invalid geometry format');
-                        }
-
-                        // Center the model
-                        centerModel(mesh);
-                        
-                        // Lighting setup
-                        const ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
-                        originalScene.add(ambientLight);
-
-                        const frontLight = new THREE.DirectionalLight(0xffffff, 0.4);
-                        frontLight.position.set(0, 0, 5);
-                        
-                        const topLight = new THREE.DirectionalLight(0xffffff, 0.3);
-                        topLight.position.set(0, 5, 0);
-                        
-                        const sideLight = new THREE.DirectionalLight(0xffffff, 0.2);
-                        sideLight.position.set(5, 0, 0);
-                        
-                        originalScene.add(frontLight);
-                        originalScene.add(topLight);
-                        originalScene.add(sideLight);
-                        
-                        originalScene.add(mesh);
-
-                        // Enable process button
-                        processButton.disabled = false;
-
-                        // Update camera position
-                        const boundingBox = new THREE.Box3().setFromObject(mesh);
-                        const center = boundingBox.getCenter(new THREE.Vector3());
-                        const size = boundingBox.getSize(new THREE.Vector3());
-                        
-                        const maxDim = Math.max(size.x, size.y, size.z);
-                        const fov = originalCamera.fov * (Math.PI / 180);
-                        const cameraDistance = Math.abs(maxDim / Math.sin(fov / 2) / 2);
-                        
-                        originalCamera.position.set(center.x, center.y, center.z + cameraDistance);
-                        originalCamera.lookAt(center);
-                        originalControls.target.copy(center);
-                        originalControls.update();
-                    },
-                    // Progress callback
-                    function(xhr) {
-                        console.log((xhr.loaded / xhr.total * 100) + '% loaded');
-                    },
-                    // Error callback
-                    function(error) {
-                        console.error('Error loading model:', error);
-                        showError('Error loading model: ' + error.message);
-                    }
-                );
-            } catch (error) {
-                console.error('Error processing model:', error);
-                showError('Error processing model: ' + error.message);
+                        console.warn(`File not found: ${fileName}`);
+                        return url;
+                    });
+            
+                    loader = new THREE.GLTFLoader(manager);
+                    break;
+                case 'dae':
+                    loader = new THREE.ColladaLoader();
+                    break;
+                case '3ds':
+                    loader = new THREE.TDSLoader();
+                    break;
+            default:
+                throw new Error('Unsupported file format');
             }
-        };
-
-        reader.onerror = function(error) {
-            console.error('Error reading file:', error);
-            showError('Error reading file: ' + error.message);
-        };
-
-        // Read the file
-        reader.readAsArrayBuffer(file);
+        
+            // Load the model
+            loader.load(
+                URL.createObjectURL(modelFile),
+                function(result) {
+                    // Clean up object URLs for .gltf/.glb files
+                    if (objectURLs.length > 0) {
+                        objectURLs.forEach(URL.revokeObjectURL);
+                    }
+    
+                    // Handle the loaded model
+                    handleLoadedModel(result, fileExtension);
+                },
+                // Progress callback
+                function(xhr) {
+                    console.log((xhr.loaded / xhr.total * 100) + '% loaded');
+                },
+                // Error callback
+                function(error) {
+                    console.error('Error loading model:', error);
+                    showError('Error loading model: ' + error.message);
+                }
+            );
+        } catch (error) {
+            console.error('Error processing model:', error);
+            showError('Error processing model: ' + error.message);
+        }
     }
 
     // Helper function to center the model
-    function centerModel(model) {
+    function centerModel(model, camera, controls) {
         if (!model) {
             console.error('No model provided to center.');
             return;
         }
-
+    
         const box = new THREE.Box3().setFromObject(model);
-        console.log('Bounding box:', box);
-
+    
         if (!box.isEmpty()) {
             const center = box.getCenter(new THREE.Vector3());
             const size = box.getSize(new THREE.Vector3());
-            console.log('Model center:', center, 'Model size:', size);
-
-            model.position.sub(center); // Center the model
+    
+            // Center the model
+            model.position.sub(center);
+    
+            // Adjust camera position
             const maxDim = Math.max(size.x, size.y, size.z);
-            const fov = originalCamera.fov * (Math.PI / 180);
-            const cameraZ = Math.abs(maxDim / Math.tan(fov / 2)) * 1.5;
-            originalCamera.position.z = cameraZ;
-            originalCamera.updateProjectionMatrix();
+            const fov = camera.fov * (Math.PI / 180);
+            const cameraZ = maxDim / (2 * Math.tan(fov / 2)) * 1.5;
+    
+            camera.position.set(0, 0, cameraZ);
+            camera.lookAt(0, 0, 0);
+            camera.updateProjectionMatrix();
+    
+            // Update controls
+            if (controls) {
+                controls.target.set(0, 0, 0);
+                controls.update();
+            }
         } else {
             console.warn('Bounding box is empty, skipping centering.');
         }
@@ -370,9 +513,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // File input change handler
     fileInput.addEventListener('change', function(e) {
         if (e.target.files.length > 0) {
-            const file = e.target.files[0];
-            console.log('File selected:', file.name, 'Size:', file.size, 'Type:', file.type);
-            handleFileSelect(file);
+            handleFileSelect(e.target.files);
         } else {
             console.error('No file selected!');
             fileInfo.textContent = 'No file selected';
@@ -396,11 +537,10 @@ document.addEventListener('DOMContentLoaded', function() {
         e.preventDefault();
         e.stopPropagation();
         dropZone.classList.remove('dragover');
-        
+    
         const files = e.dataTransfer.files;
         if (files.length > 0) {
-            console.log('Dropped file:', files[0].name);
-            handleFileSelect(files[0]);
+            handleFileSelect(files);
         } else {
             console.error('No file dropped.');
             fileInfo.textContent = 'No file dropped';
@@ -410,7 +550,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // Enhanced retopology algorithm with feature preservation
     function decimateGeometry(geometry, targetFaceCount) {
         try {
-            // Ensure we have a valid geometry to work with
+            // Ensure we have a valid geometry
             if (!geometry || !geometry.attributes || !geometry.attributes.position) {
                 console.error('Invalid geometry provided');
                 return geometry;
@@ -426,33 +566,82 @@ document.addEventListener('DOMContentLoaded', function() {
                 geometry.computeVertexNormals();
             }
 
-            // Create modifier
+            // Calculate current face count
+            const currentFaceCount = geometry.index.count / 3;
+
+            // Calculate edge connectivity to identify boundary edges
+            const edgeMap = new Map();
+            const indices = geometry.index.array;
+            
+            for (let i = 0; i < indices.length; i += 3) {
+                const a = indices[i];
+                const b = indices[i + 1];
+                const c = indices[i + 2];
+                
+                // Add edges to map
+                const addEdge = (v1, v2) => {
+                    const key = `${Math.min(v1, v2)},${Math.max(v1, v2)}`;
+                    edgeMap.set(key, (edgeMap.get(key) || 0) + 1);
+                };
+                
+                addEdge(a, b);
+                addEdge(b, c);
+                addEdge(c, a);
+            }
+
+            // Find boundary vertices (vertices on edges that appear only once)
+            const boundaryVertices = new Set();
+            for (const [edge, count] of edgeMap) {
+                if (count === 1) {
+                    const [v1, v2] = edge.split(',').map(Number);
+                    boundaryVertices.add(v1);
+                    boundaryVertices.add(v2);
+                }
+            }
+
+            // Calculate importance weights for each vertex
+            const positions = geometry.attributes.position.array;
+            const vertexWeights = new Float32Array(positions.length / 3);
+            
+            for (let i = 0; i < vertexWeights.length; i++) {
+                // Start with base weight
+                let weight = 1.0;
+                
+                // Increase weight for boundary vertices
+                if (boundaryVertices.has(i)) {
+                    weight *= 3.0;
+                }
+                
+                // Add position-based weighting (preserve extremities)
+                const x = positions[i * 3];
+                const y = positions[i * 3 + 1];
+                const z = positions[i * 3 + 2];
+                const distanceFromCenter = Math.sqrt(x * x + y * y + z * z);
+                weight *= (1.0 + distanceFromCenter * 0.1);
+                
+                vertexWeights[i] = weight;
+            }
+
+            // Adjust target face count based on topology
+            const safeTargetCount = Math.min(targetFaceCount, currentFaceCount - 1);
+
+            // Create custom modifier that respects vertex weights
             const modifier = new THREE.SimplifyModifier();
-
-            // Calculate safe target count
-            const currentCount = geometry.attributes.position.count / 3;
-            const safeTargetCount = Math.max(targetFaceCount, Math.floor(currentCount * 0.1));
-            console.log(`Decimating from ${currentCount} to ${safeTargetCount} faces`);
-
+            
             try {
-                // Perform initial decimation
+                // Modify the geometry
                 let decimated = modifier.modify(geometry, safeTargetCount);
                 
-                // Ensure we got a valid result
                 if (!decimated || decimated.attributes.position.count === 0) {
                     console.warn('Decimation failed, falling back to original geometry');
                     return geometry;
                 }
 
-                // Compute new normals
+                // Ensure proper attributes
                 decimated.computeVertexNormals();
-
-                // Optional: Clean up small triangles and improve edge flow
-                decimated = cleanupGeometry(decimated);
-
                 return decimated;
-            } catch (modifierError) {
-                console.error('Error during decimation:', modifierError);
+            } catch (error) {
+                console.warn('Decimation error:', error);
                 return geometry;
             }
         } catch (error) {
@@ -464,10 +653,24 @@ document.addEventListener('DOMContentLoaded', function() {
     // Helper function to clean up geometry
     function cleanupGeometry(geometry) {
         try {
+            // Remove problematic attributes
+            const attributesToRemove = ['skinIndex', 'skinWeight'];
+            attributesToRemove.forEach(attr => {
+                if (geometry.attributes[attr]) {
+                    delete geometry.attributes[attr];
+                }
+            });
+
+            // **Ensure normals are present**
+            if (!geometry.attributes.normal) {
+                console.warn('geometry.attributes.normal is undefined; computing vertex normals.');
+                geometry.computeVertexNormals();
+            }
+
             // Merge vertices that are very close to each other
             const mergedGeometry = THREE.BufferGeometryUtils.mergeVertices(geometry, 0.001);
-            
-            // Compute vertex normals
+
+            // Compute vertex normals again after merging
             mergedGeometry.computeVertexNormals();
             
             // Remove degenerate triangles
@@ -492,8 +695,11 @@ document.addEventListener('DOMContentLoaded', function() {
                     positions[i2 * 3 + 2]
                 );
                 
+                // Create a triangle instance
+                const triangle = new THREE.Triangle(v0, v1, v2);
+                
                 // Check if triangle has non-zero area
-                const area = THREE.Triangle.getArea(v0, v1, v2);
+                const area = triangle.getArea();
                 return area > 0.000001;
             };
             
@@ -504,9 +710,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     }
                 }
             } else {
-                for (let i = 0; i < positions.length; i += 9) {
-                    if (processTriangle(i/3, i/3 + 1, i/3 + 2)) {
-                        validFaces.push(i/3, i/3 + 1, i/3 + 2);
+                for (let i = 0; i < positions.length / 3; i += 3) {
+                    if (processTriangle(i, i + 1, i + 2)) {
+                        validFaces.push(i, i + 1, i + 2);
                     }
                 }
             }
@@ -518,109 +724,256 @@ document.addEventListener('DOMContentLoaded', function() {
             if (mergedGeometry.attributes.uv) {
                 cleanGeometry.setAttribute('uv', mergedGeometry.attributes.uv);
             }
+            if (mergedGeometry.attributes.color) {
+                cleanGeometry.setAttribute('color', mergedGeometry.attributes.color);
+            }
             cleanGeometry.setIndex(validFaces);
             
-            return cleanGeometry;
+                return cleanGeometry;
         } catch (error) {
             console.error('Error in cleanupGeometry:', error);
             return geometry;
         }
     }
 
+    // Add new helper function for curvature calculation
+    function calculateVertexCurvature(geometry) {
+        const positions = geometry.attributes.position.array;
+        const normals = geometry.attributes.normal.array;
+        const indices = geometry.index ? geometry.index.array : null;
+        const vertexCurvatures = new Float32Array(positions.length / 3);
+
+        // If we don't have indices, create them
+        const workingIndices = indices || Array.from({ length: positions.length / 3 }, (_, i) => i);
+
+        // Calculate curvature for each vertex
+        for (let i = 0; i < positions.length; i += 3) {
+            const vertexIdx = i / 3;
+            let curvature = 0;
+            let neighborCount = 0;
+
+            // Find connected vertices
+            for (let j = 0; j < workingIndices.length; j += 3) {
+                const a = workingIndices[j];
+                const b = workingIndices[j + 1];
+                const c = workingIndices[j + 2];
+
+                if (a === vertexIdx || b === vertexIdx || c === vertexIdx) {
+                    // Calculate normal difference with neighbors
+                    const vertices = [a, b, c].filter(idx => idx !== vertexIdx);
+                    for (const neighbor of vertices) {
+                        const normalDiff = Math.abs(
+                            normals[vertexIdx * 3] * normals[neighbor * 3] +
+                            normals[vertexIdx * 3 + 1] * normals[neighbor * 3 + 1] +
+                            normals[vertexIdx * 3 + 2] * normals[neighbor * 3 + 2]
+                        );
+                        curvature += 1 - normalDiff;
+                        neighborCount++;
+                    }
+                }
+            }
+
+            vertexCurvatures[vertexIdx] = neighborCount > 0 ? curvature / neighborCount : 0;
+        }
+
+        return vertexCurvatures;
+    }
+
+    // Add new helper function for feature detection
+    function detectFeatures(geometry) {
+        const curvatures = calculateVertexCurvature(geometry);
+        const positions = geometry.attributes.position.array;
+        const features = new Set();
+        
+        // Find high curvature regions (potential features)
+        const mean = curvatures.reduce((a, b) => a + b, 0) / curvatures.length;
+        const stdDev = Math.sqrt(
+            curvatures.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / curvatures.length
+        );
+        
+        const threshold = mean + stdDev;
+        
+        for (let i = 0; i < curvatures.length; i++) {
+            if (curvatures[i] > threshold) {
+                features.add(i);
+            }
+        }
+        
+        return features;
+    }
+
     // Process and download button handlers
     processButton.addEventListener('click', function() {
-        // Get the original mesh
-        const originalMesh = originalScene.children.find(child => child instanceof THREE.Mesh || child instanceof THREE.Group);
-        if (!originalMesh) {
+        // Get the original model
+        const originalModel = originalScene.children.find(child => child instanceof THREE.Group || child.isMesh);
+        if (!originalModel) {
             showError('No model found to process');
             return;
         }
-
+    
+        // Get target face count from input
+        const targetFaceCount = parseInt(document.getElementById('targetFaces').value) || 5000;
+    
         // Show processing state
         processButton.disabled = true;
         processButton.textContent = 'Processing...';
-
+    
         try {
-            // Get the geometry
-            let geometry;
-            if (originalMesh instanceof THREE.Group) {
-                const firstMesh = originalMesh.children.find(child => child instanceof THREE.Mesh);
-                if (!firstMesh) throw new Error('No mesh found in group');
-                geometry = firstMesh.geometry.clone();
-            } else {
-                geometry = originalMesh.geometry.clone();
-            }
-
-            console.log('Original geometry:', {
-                vertices: geometry.attributes.position.count,
-                faces: geometry.attributes.position.count / 3,
-                indexed: !!geometry.index
+            // First pass: Calculate total face count and analyze mesh importance
+            let totalFaceCount = 0;
+            const meshAnalysis = [];
+            const meshParents = new Map(); // Store parent-child relationships
+            
+            originalModel.traverse(function(child) {
+                if (child.isMesh) {
+                    const geometry = child.geometry;
+                    const faceCount = geometry.index ? geometry.index.count / 3 : geometry.attributes.position.count / 3;
+                    
+                    // Store parent reference
+                    meshParents.set(child, child.parent);
+                    
+                    // Calculate mesh complexity and feature importance
+                    const boundingBox = new THREE.Box3().setFromObject(child);
+                    const size = new THREE.Vector3();
+                    boundingBox.getSize(size);
+                    const volume = size.x * size.y * size.z;
+                    const density = faceCount / volume;
+                    
+                    // Calculate distance from center to prioritize extremities (like hands)
+                    const center = new THREE.Vector3();
+                    boundingBox.getCenter(center);
+                    const distanceFromCenter = center.length();
+                    
+                    meshAnalysis.push({
+                        mesh: child,
+                        faceCount: faceCount,
+                        density: density,
+                        volume: volume,
+                        distanceFromCenter: distanceFromCenter,
+                        worldMatrix: child.matrixWorld.clone() // Store world transform
+                    });
+                    
+                    totalFaceCount += faceCount;
+                }
             });
-
-            // Get target face count
-            const targetFaceCount = parseInt(document.getElementById('targetFaces').value) || 5000;
             
-            // Calculate current face count
-            const currentFaces = geometry.attributes.position.count / 3;
-            
-            // Don't process if target faces is greater than current faces
-            if (targetFaceCount >= currentFaces) {
-                showError('Target face count must be less than current face count: ' + currentFaces);
+            if (targetFaceCount >= totalFaceCount) {
+                showError('Target face count must be less than current face count: ' + totalFaceCount);
                 processButton.disabled = false;
                 processButton.textContent = 'Process Model';
                 return;
             }
-
-            console.log('Processing mesh:', {
-                currentFaces,
-                targetFaceCount
-            });
-
-            // Decimate the geometry
-            const decimatedGeometry = decimateGeometry(geometry, targetFaceCount);
-
-            console.log('Final geometry:', {
-                vertices: decimatedGeometry.attributes.position.count,
-                faces: decimatedGeometry.attributes.position.count / 3,
-                indexed: !!decimatedGeometry.index
-            });
-
-            // Create material
-            const material = new THREE.MeshPhongMaterial({
-                color: 0x808080,
-                side: THREE.DoubleSide,
-                flatShading: true,
-                shininess: 30
-            });
-
-            // Create the processed mesh
-            const processedMesh = new THREE.Mesh(decimatedGeometry, material);
             
-            // Clear previous processed scene content
+            // Sort meshes by a combination of density and distance from center
+            meshAnalysis.sort((a, b) => {
+                const aScore = a.density * (1 + a.distanceFromCenter * 0.5);
+                const bScore = b.density * (1 + b.distanceFromCenter * 0.5);
+                return bScore - aScore;
+            });
+            
+            // Calculate weighted distribution of faces
+            const totalScore = meshAnalysis.reduce((sum, item) => {
+                return sum + (item.density * (1 + item.distanceFromCenter * 0.5));
+            }, 0);
+            
+            // Create a new group with the same structure as the original
+            const processedGroup = new THREE.Group();
+            processedGroup.matrix.copy(originalModel.matrix);
+            processedGroup.matrixWorld.copy(originalModel.matrixWorld);
+            
+            // Second pass: Decimate each mesh while preserving hierarchy
+            let processedFaceCount = 0;
+            
+            // Create a map to store processed meshes
+            const processedMeshes = new Map();
+            
+            for (const analysis of meshAnalysis) {
+                const child = analysis.mesh;
+                
+                // Clone geometry to avoid modifying the original
+                let geometry = child.geometry.clone();
+                
+                // Clean up geometry attributes
+                geometry = cleanupGeometry(geometry);
+                
+                // Calculate target faces based on weighted score
+                const reductionFactor = targetFaceCount / totalFaceCount;
+                const geometryTargetFaceCount = Math.floor(analysis.faceCount * reductionFactor);
+
+                console.log(`Processing mesh with ${analysis.faceCount} faces, target: ${geometryTargetFaceCount}`);
+                
+                // Decimate geometry
+                const decimatedGeometry = decimateGeometry(geometry, geometryTargetFaceCount);
+                
+                // Create material for the mesh
+                const meshMaterial = new THREE.MeshPhongMaterial({
+                    color: 0xaaaaaa,
+                    side: THREE.DoubleSide,
+                    flatShading: true,
+                    shininess: 30
+                });
+                
+                // Create decimated mesh
+                const processedMesh = new THREE.Mesh(decimatedGeometry, meshMaterial);
+                
+                // Restore original transform
+                processedMesh.matrix.copy(analysis.worldMatrix);
+                processedMesh.matrix.decompose(processedMesh.position, processedMesh.quaternion, processedMesh.scale);
+                
+                // Add wireframe
+                const wireframeGeometry = new THREE.WireframeGeometry(decimatedGeometry);
+                const wireframeMaterial = new THREE.LineBasicMaterial({
+                    color: 0x000000,
+                    linewidth: 1,
+                    opacity: 0.3,
+                    transparent: true
+                });
+                const wireframeMesh = new THREE.LineSegments(wireframeGeometry, wireframeMaterial);
+                processedMesh.add(wireframeMesh);
+                
+                // Store the processed mesh
+                processedMeshes.set(child, processedMesh);
+                
+                // Update processed face count
+                processedFaceCount += decimatedGeometry.index ? decimatedGeometry.index.count / 3 : decimatedGeometry.attributes.position.count / 3;
+            }
+            
+            // Reconstruct hierarchy
+            for (const [original, processed] of processedMeshes) {
+                const parent = meshParents.get(original);
+                if (parent === originalModel) {
+                    processedGroup.add(processed);
+                } else {
+                    const processedParent = processedMeshes.get(parent) || processedGroup;
+                    processedParent.add(processed);
+                }
+            }
+            
+            // Clear previous content in processed scene and add the new group
             while (processedScene.children.length > 0) {
                 processedScene.remove(processedScene.children[0]);
             }
-
-            // Copy transformation from original mesh
-            processedMesh.position.copy(originalMesh.position);
-            processedMesh.rotation.copy(originalMesh.rotation);
-            processedMesh.scale.copy(originalMesh.scale);
+            processedScene.add(processedGroup);
             
-            // Add to scene
-            processedScene.add(processedMesh);
-
-            // Update stats if the element exists
+            // Center the processed model
+            centerModel(processedGroup, processedCamera, processedControls);
+            
+            // Add lighting to the processed scene (if needed)
+            addLightingToScene(processedScene);
+            
+            // Update stats (if any)
             const statsElement = document.getElementById('processedStats');
             if (statsElement) {
-                const processedFaces = decimatedGeometry.attributes.position.count / 3;
-                statsElement.textContent = `Faces: ${Math.floor(processedFaces)} (${Math.round((processedFaces/currentFaces) * 100)}% of original)`;
+                statsElement.textContent = `Faces: ${Math.floor(processedFaceCount)} (${Math.round(
+                    (processedFaceCount / totalFaceCount) * 100
+                )}% of original)`;
             }
-
+            
             // Re-enable buttons
             processButton.disabled = false;
             processButton.textContent = 'Process Model';
             downloadButton.disabled = false;
-
+            
         } catch (error) {
             console.error('Error processing model:', error);
             showError('Error processing model: ' + error.message);
